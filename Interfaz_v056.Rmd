@@ -1,0 +1,222 @@
+---
+title: "Untitled"
+author: ":)"
+output: html_document
+runtime: shiny
+---
+
+```{r, include = FALSE}
+library("shiny")
+library("plotly")
+library("ggplot2")
+library("reshape2")
+library("dplyr")
+library("magrittr")
+library("knitr")
+
+opts_chunk$set(echo = FALSE)
+```
+
+
+```{r, include = FALSE}
+library("sqldf")
+library("dplyr")
+library("curl")
+library("knitr")
+library("magrittr")
+library("rstudioapi")
+library("ggplot2")
+library("reshape2")
+library("shiny")
+
+# opts_chunk$set(cache = FALSE, echo = TRUE, fig.width = 10, fig.height = 5)
+
+```
+
+```{r}
+# carpeta <- dirname(getActiveDocumentContext()$path)
+
+carpeta <- getwd() # "/home/julian/Documentos/Partidos"
+
+setwd(file.path(carpeta))
+
+datos_dir_name <- "datos"
+
+if(!(datos_dir_name %in% dir())) dir.create(datos_dir_name)
+
+setwd(file.path(carpeta, datos_dir_name))
+
+url <- "https://www.dropbox.com/s/jio4emnpq0lsqui/SP1.csv?dl=1&_download_id=4215640972635130713098509208775844825310482656212821742659628797312"
+
+destfile <- "bd_partidos.csv"
+
+curl_download(url, destfile)
+
+```
+
+```{r}
+setwd(file.path(carpeta, datos_dir_name))
+
+nombres_campos <- c("Div", "Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG", "FTR", "HTHG", "HTAG", "HTR")
+
+destfile %>% read.table(sep = ",", header = TRUE, stringsAsFactors = FALSE) %>% "["(nombres_campos) -> bd_partidos
+
+bd_partidos %<>% mutate(Date = as.Date(Date, "%d/%m/%y"))
+
+# unique(bd_partidos[c("Date", "Date2")])
+
+data.frame(
+  Campo = nombres_campos,
+  Nombre = c("División", "Fecha partido", "Equipo Local", "Equipo Visitante", "Goles de local", "Goles de visitante", "Resultado", "Goles de local - primer tiempo", "Goles de visitante - primer tiempo", "Resultado Medio Tiempo"),
+  tipo = c("Varchar (3)", "Date", "Varchar  (30)", "Varchar  (30)", "Num", "Num", "Varchar(1)", "Num", "Num", "Varchar(1)"),
+    Unidades = c("Categórica", "Fecha", "Categórica", "Categórica", "Goles", "Goles", "Categórica", "Goles", "Goles", "Categórica")
+) -> metadata
+```
+
+```{r}
+bd_partidos %$% rbind(
+  data.frame(Date, HTR, FTR, Team = HomeTeam, Rival = AwayTeam, Tipo = "Home"),
+  data.frame(Date, HTR, FTR, Team = AwayTeam, Rival = HomeTeam, Tipo = "Away")
+) %>%
+  mutate(
+    RP = paste(HTR, Tipo) %>% factor %>% as.numeric %>%"["(c("W", "L", "D", "D", "L", "W"), .),
+    RF = paste(FTR, Tipo) %>% factor %>% as.numeric %>%"["(c("W", "L", "D", "D", "L", "W"), .)
+  ) %>% 
+  mutate(
+    Remonta = paste(RP, RF) %>% factor %>% as.numeric %>% "["(
+      c(NA, NA, NA, "Sí", "No", "Sí", NA, NA, NA),
+      .),
+    Es_remontado = paste(RP, RF) %>% factor %>% as.numeric %>% "["(
+      c(NA, NA, NA, NA, NA, NA, "Sí", "Sí", "No"),
+      .)
+  ) -> Tabla_Gana
+
+
+
+Tabla_Gana %$% unique(Date) -> Fechas
+
+Fechas %>% 
+  lapply(
+    function(x){
+      Tabla_Gana[x >= Tabla_Gana$Date,] -> tmp
+      data.frame(
+        x, 
+        merge(
+          aggregate(tmp["RF"], list(tmp$Team), paste, collapse = ""),
+          aggregate(
+            data.frame(tmp$Remonta == "Sí", tmp$Es_remontado == "Sí", !is.na(tmp$Remonta),!is.na(tmp$Es_remontado)), 
+            list(tmp$Team), sum, na.rm = TRUE
+            ),
+          by = c("Group.1")
+        )
+      )
+    }
+  ) %>% do.call(rbind, .) %>% 
+  setNames(
+    c("Fecha", "Equipo", "Resultado", "n_remonta","n_es_remontado", "n_puede_remontar","n_puede_ser_remontado")) %>% 
+  mutate(
+    Remonta = ifelse(n_puede_remontar == 0, NA, n_remonta/n_puede_remontar),
+    Es_remontado = ifelse(n_puede_ser_remontado == 0, NA, n_es_remontado/n_puede_ser_remontado),
+    Gana = (nchar(Resultado) - nchar(gsub("W","",Resultado)))/nchar(Resultado),
+    Pierde = (nchar(Resultado) - nchar(gsub("L","",Resultado)))/nchar(Resultado)
+    ) %>% melt(
+    c("Fecha",
+      "Equipo",
+      "Resultado",
+      "n_remonta",
+      "n_es_remontado",
+      "n_puede_remontar",
+      "n_puede_ser_remontado"
+    )
+  ) %>% setNames(
+    c("Fecha",
+      "Equipo",
+      "Resultado",
+      "n_remonta",
+      "n_es_remontado",
+      "n_puede_remontar",
+      "n_puede_ser_remontado",
+      "Variable",
+      "Probabilidad"
+    )
+  ) -> tabla_final
+
+
+# save(tabla_final,file = "tabla_final.rda")
+```
+
+
+
+```{r}
+# load("tabla_final.rda")
+
+```
+
+
+```{r}
+tabla_final %$% unique(Equipo) %>% as.character %>% sort -> Equipos_Posibles
+
+tabla_final %$% unique(Fecha) -> Fechas_Posibles
+
+```
+
+
+```{r}
+inputPanel(
+  selectInput("Equipo", 
+                  label = "Equipo",
+                  choices = Equipos_Posibles ,
+                  selected = "Almeria"),
+  dateInput("Date", "Fecha", value = "2014-05-18", format = "mm/dd/yyyy", language = "es")
+    )
+
+renderTable({ 
+  tabla_final %>% filter(Fecha == Fechas_Posibles[max(which(Fechas_Posibles <= input$Date))], Equipo == input$Equipo) %>% mutate(Fecha = as.character(Fecha)) %>% select(Fecha, Equipo, Resultado, Variable, Probabilidad) %>% dcast(Fecha + Equipo + Resultado ~ Variable) 
+})
+
+renderPlotly({ 
+  tabla_final %>% filter(Equipo == input$Equipo) %>% ggplot +  geom_line(aes(x = Fecha, y = Probabilidad, col = Variable)) + ylim(c(0,1)) -> grafico1
+
+  ggplotly(grafico1)
+  
+})
+
+```
+
+```{r}
+inputPanel(
+  selectInput("Equipo_1", 
+                  label = "Equipo 1",
+                  choices = Equipos_Posibles ,
+                  selected = "Almeria"),
+    selectInput("Equipo_2", 
+                  label = "Equipo 2",
+                  choices = Equipos_Posibles ,
+                  selected = "Ath Bilbao"),
+  checkboxGroupInput("variable", 
+                  label = "Aspecto",
+                  choices = c(
+                    "Remonta", 
+                    "Es_remontado", 
+                    "Gana", 
+                    "Pierde"
+                    ),
+                  selected = "Gana")
+    )
+
+renderPlotly({ 
+  tabla_final %>% filter(
+        Equipo %in% c(input$Equipo_1, input$Equipo_2),
+        "if"(any(Variable %in% input$variable),
+           Variable %in% input$variable,
+           !(Variable %in% input$variable))
+        ) %>% mutate(Leyenda = paste(Equipo, Variable)) %>% 
+       ggplot + geom_line(aes(x = Fecha, y = Probabilidad, col = Leyenda)) + ylim(c(0,1)) -> grafico1
+  grafico1
+
+  ggplotly(grafico1)
+  
+})
+
+```
+
